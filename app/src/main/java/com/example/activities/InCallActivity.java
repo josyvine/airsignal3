@@ -188,7 +188,7 @@ public class InCallActivity extends AppCompatActivity {
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         if (audioManager != null) {
             try {
-                audioManager.setMode(AudioManager.MODE_IN_CALL);
+                audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
             } catch (Exception ignored) {
             }
         }
@@ -302,7 +302,11 @@ public class InCallActivity extends AppCompatActivity {
                             tvRecordingBadge.setOnClickListener(v -> {
                                 Intent triggerIntent = new Intent(InCallActivity.this, AudioTransferService.class);
                                 triggerIntent.setAction(AudioTransferService.ACTION_EXECUTE_STAGED_TRANSMISSION);
-                                startService(triggerIntent);
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                    startForegroundService(triggerIntent);
+                                } else {
+                                    startService(triggerIntent);
+                                }
                                 tvRecordingBadge.setText("⚡ TRANSMITTING ACTIVATION...");
                                 Toast.makeText(InCallActivity.this, "Initiating Acoustic Data Stream...", Toast.LENGTH_SHORT).show();
                             });
@@ -432,7 +436,7 @@ public class InCallActivity extends AppCompatActivity {
             isMuted = !isMuted;
             if (audioManager != null) {
                 try {
-                    audioManager.setMode(AudioManager.MODE_IN_CALL);
+                    audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
                     audioManager.setMicrophoneMute(isMuted);
                 } catch (Exception ignored) {
                 }
@@ -454,7 +458,7 @@ public class InCallActivity extends AppCompatActivity {
             isSpeakerOn = !isSpeakerOn;
             if (audioManager != null) {
                 try {
-                    audioManager.setMode(AudioManager.MODE_IN_CALL);
+                    audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
                     audioManager.setSpeakerphoneOn(isSpeakerOn);
                 } catch (Exception ignored) {
                 }
@@ -572,7 +576,11 @@ public class InCallActivity extends AppCompatActivity {
         Intent intent = new Intent(this, AudioTransferService.class);
         intent.setAction(AudioTransferService.ACTION_SEND_TOKEN);
         intent.putExtra(AudioTransferService.EXTRA_TOKEN_PAYLOAD, token.toByteArray());
-        startService(intent);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent);
+        } else {
+            startService(intent);
+        }
 
         Toast.makeText(this, "Transmitting " + label + " over call audio...", Toast.LENGTH_SHORT).show();
     }
@@ -598,7 +606,11 @@ public class InCallActivity extends AppCompatActivity {
             intent.putExtra(AudioTransferService.EXTRA_IMAGE_PATH, tempFile.getAbsolutePath());
             intent.putExtra(AudioTransferService.EXTRA_FILE_NAME, "incall_photo.webp");
             intent.putExtra(AudioTransferService.EXTRA_FILE_SIZE, tempFile.length());
-            startService(intent);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent);
+            } else {
+                startService(intent);
+            }
 
             Toast.makeText(this, "Transmitting Photo over call stream...", Toast.LENGTH_SHORT).show();
 
@@ -639,7 +651,7 @@ public class InCallActivity extends AppCompatActivity {
             recordFilePath = recFile.getAbsolutePath();
 
             mediaRecorder = new MediaRecorder();
-            mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+            mediaRecorder.setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION);
             mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP);
             mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AMR_NB);
             mediaRecorder.setOutputFile(recordFilePath);
