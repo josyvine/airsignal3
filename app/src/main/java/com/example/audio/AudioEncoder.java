@@ -3,9 +3,11 @@ package com.example.audio;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioTrack;
+import android.telecom.Call;
 
 import com.example.knowledge.PhoneticImageTransceiver;
 import com.example.models.TemplateToken;
+import com.example.services.AirSignalInCallService;
 import com.example.utils.AirLogger;
 
 import java.io.ByteArrayOutputStream;
@@ -27,6 +29,10 @@ public class AudioEncoder {
     // Standardized handshake command strings for automated two-way connection synchronization
     public static final String CMD_ACTIVATE_RECEIVER = "AIR_CMD:ACTIVATE_RECEIVER";
     public static final String CMD_RECEIVER_READY = "AIR_ACK:RECEIVER_READY";
+
+    // DTMF tone duration metrics for cellular voice channel transmission
+    private static final int DTMF_TONE_DURATION_MS = 60;
+    private static final int DTMF_PAUSE_DURATION_MS = 30;
 
     private int baudRate = 1200; // 300, 600, 1200, 2400
     private final AtomicBoolean isTransmitting = new AtomicBoolean(false);
@@ -71,10 +77,16 @@ public class AudioEncoder {
                 activeAudioTrack = null;
             }
         }
+        Call call = AirSignalInCallService.getActiveCall();
+        if (call != null) {
+            try {
+                call.stopDtmfTone();
+            } catch (Exception ignored) {}
+        }
     }
 
     /**
-     * Receiver-side Automation: Transmits the 0.5s acoustic handshake acknowledgment to announce call answer.
+     * Receiver-side Automation: Transmits the acoustic handshake acknowledgment to announce call answer.
      */
     public void transmitReceiverReadyAck(final OnTransmissionProgressListener listener) {
         AirLogger.i(TAG, "Transmitting receiver ready acoustic acknowledgment (AIR_ACK:RECEIVER_READY)...");
@@ -99,7 +111,8 @@ public class AudioEncoder {
     }
 
     /**
-     * Transmits a single payload with synchronization preambles and progress callbacks.
+     * Transmits a single payload over the voice call.
+     * Uses Call.playDtmfTone to bypass hardware AEC during calls, with PCM synthesizer fallback.
      */
     public void transmitDataOverAudio(final byte[] data, final OnTransmissionProgressListener listener) {
         if (data == null || data.length == 0) {
@@ -110,14 +123,23 @@ public class AudioEncoder {
         new Thread(() -> {
             isTransmitting.set(true);
             try {
-                byte[] framedData = applyFrameEncapsulation(data);
-                short[] pcmSamples = generateContinuousPhaseFsk(framedData, baudRate);
+                Call activeCall = AirSignalInCallService.getActiveCall();
 
-                playPcmTrack(pcmSamples);
+                // If active cellular call is present, transmit using telephony in-call signaling
+                if (activeCall != null && activeCall.getState() == Call.STATE_ACTIVE) {
+                    AirLogger.i(TAG, "Transmitting data payload directly over active cellular call channel (" + data.length + " bytes)...");
+                    transmitPayloadViaCallChannel(activeCall, data, listener);
+                } else {
+                    // Fallback to synthesized PCM audio track
+                    AirLogger.i(TAG, "No active telephony call attached. Using synthesized PCM audio fallback.");
+                    byte[] framedData = applyFrameEncapsulation(data);
+                    short[] pcmSamples = generateContinuousPhaseFsk(framedData, baudRate);
+                    playPcmTrack(pcmSamples);
 
-                if (listener != null) {
-                    listener.onProgress(1, 1, 100);
-                    listener.onComplete();
+                    if (listener != null) {
+                        listener.onProgress(1, 1, 100);
+                        listener.onComplete();
+                    }
                 }
             } catch (Exception e) {
                 AirLogger.e(TAG, "Transmission failed", e);
@@ -126,6 +148,73 @@ public class AudioEncoder {
                 isTransmitting.set(false);
             }
         }).start();
+    }
+
+    /**
+     * Transmits data across the cellular network using telephony-whitelisted dual-frequency bursts.
+     */
+    private void transmitPayloadViaCallChannel(Call call, byte[] data, OnTransmissionProgressListener listener) throws InterruptedException {
+        // Convert raw byte stream into hexadecimal character pairs
+        StringBuilder hexString = new StringBuilder();
+        for (byte b : data) {
+            hexString.append(String.format("%02X", b));
+        }
+        String symbols = hexString.toString();
+        int totalSymbols = symbols.length();
+
+        for (int i = 0; i < totalSymbols; i++) {
+            if (!isTransmitting.get()) break;
+
+            char hexChar = symbols.charAt(i);
+            char dtmfDigit = hexCharToDtmf(hexChar);
+
+            try {
+                call.playDtmfTone(dtmfDigit);
+            } catch (Exception e) {
+                AirLogger.w(TAG, "Exception during call.playDtmfTone: " + e.getMessage());
+            }
+
+            Thread.sleep(DTMF_TONE_DURATION_MS);
+
+            try {
+                call.stopDtmfTone();
+            } catch (Exception ignored) {}
+
+            Thread.sleep(DTMF_PAUSE_DURATION_MS);
+
+            if (listener != null && i % 4 == 0) {
+                int percent = (int) (((i + 1) / (float) totalSymbols) * 100);
+                listener.onProgress(i + 1, totalSymbols, percent);
+            }
+        }
+
+        if (listener != null) {
+            listener.onProgress(totalSymbols, totalSymbols, 100);
+            listener.onComplete();
+        }
+    }
+
+    private char hexCharToDtmf(char hex) {
+        char upper = Character.toUpperCase(hex);
+        switch (upper) {
+            case '0': return '0';
+            case '1': return '1';
+            case '2': return '2';
+            case '3': return '3';
+            case '4': return '4';
+            case '5': return '5';
+            case '6': return '6';
+            case '7': return '7';
+            case '8': return '8';
+            case '9': return '9';
+            case 'A': return 'A';
+            case 'B': return 'B';
+            case 'C': return 'C';
+            case 'D': return 'D';
+            case 'E': return '*';
+            case 'F': return '#';
+            default: return '0';
+        }
     }
 
     /**
@@ -141,7 +230,7 @@ public class AudioEncoder {
     }
 
     /**
-     * Dedicated Feature: Transmits a list of Phonetic Base64 Dictionary words as a structured FSK sequence.
+     * Dedicated Feature: Transmits a list of Phonetic Base64 Dictionary words as a structured sequence.
      */
     public void transmitPhoneticBase64Sequence(final List<String> phoneticWords, final OnTransmissionProgressListener listener) {
         if (phoneticWords == null || phoneticWords.isEmpty()) {
@@ -153,7 +242,7 @@ public class AudioEncoder {
     }
 
     /**
-     * Mode 2: Streams a multi-packet raw binary dataset (e.g. 500 KB file) incrementally.
+     * Mode 2: Streams a multi-packet raw binary dataset incrementally.
      */
     public void transmitRawStream(final List<byte[]> packets, final OnTransmissionProgressListener listener) {
         if (packets == null || packets.isEmpty()) {
@@ -166,39 +255,11 @@ public class AudioEncoder {
             try {
                 int totalPackets = packets.size();
 
-                int minBufferSize = AudioTrack.getMinBufferSize(
-                        SAMPLE_RATE,
-                        AudioFormat.CHANNEL_OUT_MONO,
-                        AudioFormat.ENCODING_PCM_16BIT
-                );
-
-                activeAudioTrack = new AudioTrack.Builder()
-                        .setAudioAttributes(new AudioAttributes.Builder()
-                                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                                .build())
-                        .setAudioFormat(new AudioFormat.Builder()
-                                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                                .setSampleRate(SAMPLE_RATE)
-                                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                                .build())
-                        .setBufferSizeInBytes(Math.max(minBufferSize * 4, 8192))
-                        .setTransferMode(AudioTrack.MODE_STREAM)
-                        .build();
-
-                activeAudioTrack.play();
-
                 for (int i = 0; i < totalPackets; i++) {
-                    if (!isTransmitting.get()) {
-                        break;
-                    }
+                    if (!isTransmitting.get()) break;
 
                     byte[] packetData = packets.get(i);
-                    byte[] framed = applyFrameEncapsulation(packetData);
-                    short[] pcmSamples = generateContinuousPhaseFsk(framed, baudRate);
-
-                    byte[] pcmBytes = convertShortsToBytes(pcmSamples);
-                    activeAudioTrack.write(pcmBytes, 0, pcmBytes.length);
+                    transmitDataOverAudio(packetData, null);
 
                     int progressPercent = (int) (((i + 1) / (float) totalPackets) * 100);
                     if (listener != null) {
@@ -219,7 +280,7 @@ public class AudioEncoder {
     }
 
     /**
-     * Prepends sync bytes (0xAA 0xAA 0xAA 0x7E) for automatic receiver preamble detection.
+     * Prepends sync bytes (0xAA 0xAA 0xAA 0x7E) for receiver preamble detection.
      */
     private byte[] applyFrameEncapsulation(byte[] payload) {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
