@@ -17,8 +17,96 @@ public class AudioDecoder {
     public static final byte SYNC_PREAMBLE = (byte) 0xAA;
     public static final byte START_FRAME_DELIMITER = (byte) 0x7E;
 
-    // Minimum RMS energy threshold to distinguish signal from silence
-    private static final double MIN_ENERGY_THRESHOLD = 500.0;
+    // Minimum RMS energy threshold to distinguish in-call signal from silence
+    private static final double MIN_ENERGY_THRESHOLD = 300.0;
+
+    // Standard In-Call Telephony Dual-Frequency Grid (Hz)
+    public static final int[] DTMF_ROW_FREQS = new int[]{697, 770, 852, 941};
+    public static final int[] DTMF_COL_FREQS = new int[]{1209, 1336, 1477, 1633};
+
+    private static final char[][] DTMF_MATRIX = new char[][]{
+            {'1', '2', '3', 'A'},
+            {'4', '5', '6', 'B'},
+            {'7', '8', '9', 'C'},
+            {'*', '0', '#', 'D'}
+    };
+
+    /**
+     * Decodes in-call audio dual-frequencies from a PCM buffer segment.
+     * Returns the detected symbol character or '?' if silence/noise.
+     */
+    public static char detectDtmfSymbol(short[] pcm, int offset, int length, int sampleRate) {
+        if (pcm == null || length <= 0 || offset + length > pcm.length) {
+            return '?';
+        }
+
+        double totalEnergy = calculateRmsEnergy(pcm, offset, length);
+        if (totalEnergy < MIN_ENERGY_THRESHOLD) {
+            return '?'; // Silence or background noise
+        }
+
+        // Find dominant row frequency
+        int bestRow = -1;
+        double maxRowPower = 0.0;
+        for (int r = 0; r < DTMF_ROW_FREQS.length; r++) {
+            double power = calculateGoertzelPower(pcm, offset, length, DTMF_ROW_FREQS[r], sampleRate);
+            if (power > maxRowPower) {
+                maxRowPower = power;
+                bestRow = r;
+            }
+        }
+
+        // Find dominant column frequency
+        int bestCol = -1;
+        double maxColPower = 0.0;
+        for (int c = 0; c < DTMF_COL_FREQS.length; c++) {
+            double power = calculateGoertzelPower(pcm, offset, length, DTMF_COL_FREQS[c], sampleRate);
+            if (power > maxColPower) {
+                maxColPower = power;
+                bestCol = c;
+            }
+        }
+
+        // Validate frequency power ratio
+        if (bestRow != -1 && bestCol != -1 && maxRowPower > 5000.0 && maxColPower > 5000.0) {
+            return DTMF_MATRIX[bestRow][bestCol];
+        }
+
+        return '?';
+    }
+
+    /**
+     * Converts a pair of in-call DTMF symbols back into a single data byte.
+     */
+    public static int dtmfPairToByte(char high, char low) {
+        int h = dtmfCharToNibble(high);
+        int l = dtmfCharToNibble(low);
+        if (h == -1 || l == -1) return -1;
+        return ((h << 4) | l) & 0xFF;
+    }
+
+    private static int dtmfCharToNibble(char c) {
+        char upper = Character.toUpperCase(c);
+        switch (upper) {
+            case '0': return 0x0;
+            case '1': return 0x1;
+            case '2': return 0x2;
+            case '3': return 0x3;
+            case '4': return 0x4;
+            case '5': return 0x5;
+            case '6': return 0x6;
+            case '7': return 0x7;
+            case '8': return 0x8;
+            case '9': return 0x9;
+            case 'A': return 0xA;
+            case 'B': return 0xB;
+            case 'C': return 0xC;
+            case 'D': return 0xD;
+            case '*': return 0xE;
+            case '#': return 0xF;
+            default: return -1;
+        }
+    }
 
     /**
      * Legacy backward-compatible bit detector.
