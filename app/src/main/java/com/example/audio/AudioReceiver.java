@@ -97,12 +97,12 @@ public class AudioReceiver {
     public void startListening() {
         if (isListening.get()) return;
 
-        // Hardware Compatibility Probe Matrix (Prioritizing communication sources to bypass call silencing/noise filters)
+        // Hardware Compatibility Probe Matrix (Prioritizing raw MIC to capture speakerphone acoustic sound directly)
         int[] sampleRates = new int[]{44100, 48000, 16000, 8000};
         int[] audioSources = new int[]{
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                MediaRecorder.AudioSource.VOICE_RECOGNITION,
                 MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 MediaRecorder.AudioSource.DEFAULT
         };
 
