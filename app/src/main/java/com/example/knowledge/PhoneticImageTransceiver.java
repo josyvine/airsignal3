@@ -159,7 +159,7 @@ public class PhoneticImageTransceiver {
                         (path, uri) -> AirLogger.i(TAG, "MediaScanner indexed reconstructed image: " + path)
                 );
 
-                AirLogger.i(TAG, "Exact image successfully restored to public storage: " + outputFile.getAbsolutePath() +
+                AirLogger.i(TAG, "Exact image successfully restored to storage: " + outputFile.getAbsolutePath() +
                         " (" + exactImageBytes.length + " bytes)");
 
                 // 5. Zero-Touch UI Display: Auto-pop up the exact picture on the receiver's screen
