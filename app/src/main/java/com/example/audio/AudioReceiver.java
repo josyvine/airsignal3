@@ -97,12 +97,13 @@ public class AudioReceiver {
     public void startListening() {
         if (isListening.get()) return;
 
-        // Hardware Compatibility Probe Matrix (Prioritizing raw MIC to capture speakerphone acoustic sound directly)
+        // Hardware Compatibility Probe Matrix (Supports Huawei EMUI, ColorOS, and Standard Android)
         int[] sampleRates = new int[]{44100, 48000, 16000, 8000};
         int[] audioSources = new int[]{
-                MediaRecorder.AudioSource.MIC,
-                MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                MediaRecorder.AudioSource.VOICE_RECOGNITION, // Unlocked on Huawei EMUI during calls
+                9,                                           // AudioSource.UNPROCESSED (Direct hardware ADC)
+                MediaRecorder.AudioSource.CAMCORDER,         // Secondary ambient mic
+                MediaRecorder.AudioSource.MIC,               // Standard mic (Oppo / Samsung)
                 MediaRecorder.AudioSource.DEFAULT
         };
 
@@ -300,13 +301,13 @@ public class AudioReceiver {
                         }
 
                         // 4. Phonetic Image Preamble Check & Full Stream Accumulator (Up to 32 KB)
-                        if (preview.contains(PhoneticImageTransceiver.PHONETIC_IMG_PREAMBLE)) {
+                        if (preview.contains(PhoneticImageTransceiver.PHONETIC_IMG_PREAMBLE) || isAccumulatingImage) {
                             isAccumulatingImage = true;
 
-                            // Check if stream reached the trailing closure delimiters (contains total tokens & original length closures)
+                            // Check if stream reached the trailing closure delimiters
                             int firstHash = preview.indexOf('#');
                             int lastHash = preview.lastIndexOf('#');
-                            if (firstHash != -1 && lastHash > firstHash && (preview.endsWith("#") || countOccurrences(preview, '#') >= 3)) {
+                            if (firstHash != -1 && lastHash > firstHash && (preview.endsWith("#") || countOccurrences(preview, '#') >= 2)) {
                                 AirLogger.i(TAG, "Complete Phonetic Image stream accumulated (" + currentBufferBytes.length + " bytes). Delivering.");
                                 if (listener != null) {
                                     listener.onFrameDecoded(currentBufferBytes);
@@ -318,22 +319,20 @@ public class AudioReceiver {
                             }
                         }
 
-                        // 5. Mode 2/3 Raw Binary Packet Frame flush (Binary packets start with 0x53 'S' and are 263 bytes)
-                        if (!isAccumulatingImage && frameBuffer.size() >= 263) {
-                            if (currentBufferBytes[0] == 0x53 || containsBinaryHeader(currentBufferBytes)) {
-                                if (listener != null) {
-                                    listener.onFrameDecoded(currentBufferBytes);
-                                }
-                                isLockedOnPreamble = false;
-                                frameBuffer.reset();
-                            } else if (frameBuffer.size() >= MAX_STREAM_BUFFER_SIZE) {
-                                // Safety limit flush
-                                if (listener != null) {
-                                    listener.onFrameDecoded(currentBufferBytes);
-                                }
-                                isLockedOnPreamble = false;
-                                frameBuffer.reset();
+                        // 5. Mode 2/3 Raw Binary Packet Frame flush (Strict validation: must start with 0x53 'S' and be exactly 263 bytes)
+                        if (!isAccumulatingImage && frameBuffer.size() == 263 && currentBufferBytes[0] == 0x53) {
+                            if (listener != null) {
+                                listener.onFrameDecoded(currentBufferBytes);
                             }
+                            isLockedOnPreamble = false;
+                            frameBuffer.reset();
+                        } else if (!isAccumulatingImage && frameBuffer.size() >= MAX_STREAM_BUFFER_SIZE) {
+                            // Safety limit flush
+                            if (listener != null) {
+                                listener.onFrameDecoded(currentBufferBytes);
+                            }
+                            isLockedOnPreamble = false;
+                            frameBuffer.reset();
                         }
                     }
                 }
@@ -352,14 +351,6 @@ public class AudioReceiver {
             if (str.charAt(i) == ch) count++;
         }
         return count;
-    }
-
-    private boolean containsBinaryHeader(byte[] data) {
-        if (data == null || data.length < 7) return false;
-        for (int i = 0; i <= data.length - 7; i++) {
-            if (data[i] == 0x53) return true;
-        }
-        return false;
     }
 
     public void stopListening() {
@@ -384,6 +375,8 @@ public class AudioReceiver {
             case MediaRecorder.AudioSource.MIC: return "MIC";
             case MediaRecorder.AudioSource.VOICE_RECOGNITION: return "VOICE_RECOGNITION";
             case MediaRecorder.AudioSource.VOICE_COMMUNICATION: return "VOICE_COMMUNICATION";
+            case MediaRecorder.AudioSource.CAMCORDER: return "CAMCORDER";
+            case 9: return "UNPROCESSED";
             case MediaRecorder.AudioSource.DEFAULT: return "DEFAULT";
             default: return "SOURCE_" + source;
         }
