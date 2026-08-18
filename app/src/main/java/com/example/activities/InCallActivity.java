@@ -186,12 +186,6 @@ public class InCallActivity extends AppCompatActivity {
 
         dbHelper = DatabaseHelper.getInstance(this);
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-        if (audioManager != null) {
-            try {
-                audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
-            } catch (Exception ignored) {
-            }
-        }
 
         try {
             toneGenerator = new ToneGenerator(AudioManager.STREAM_DTMF, 80);
@@ -436,7 +430,6 @@ public class InCallActivity extends AppCompatActivity {
             isMuted = !isMuted;
             if (audioManager != null) {
                 try {
-                    audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
                     audioManager.setMicrophoneMute(isMuted);
                 } catch (Exception ignored) {
                 }
@@ -458,7 +451,6 @@ public class InCallActivity extends AppCompatActivity {
             isSpeakerOn = !isSpeakerOn;
             if (audioManager != null) {
                 try {
-                    audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
                     audioManager.setSpeakerphoneOn(isSpeakerOn);
                 } catch (Exception ignored) {
                 }
@@ -651,7 +643,7 @@ public class InCallActivity extends AppCompatActivity {
             recordFilePath = recFile.getAbsolutePath();
 
             mediaRecorder = new MediaRecorder();
-            mediaRecorder.setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION);
+            mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
             mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP);
             mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AMR_NB);
             mediaRecorder.setOutputFile(recordFilePath);
@@ -774,7 +766,6 @@ public class InCallActivity extends AppCompatActivity {
             try {
                 audioManager.setSpeakerphoneOn(false);
                 audioManager.setMicrophoneMute(false);
-                audioManager.setMode(AudioManager.MODE_NORMAL);
             } catch (Exception ignored) {
             }
         }
