@@ -204,12 +204,8 @@ public class AudioTransferService extends Service implements AudioReceiver.Audio
         AudioManager audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         if (audioManager != null) {
             try {
-                int currentMode = audioManager.getMode();
-                if (currentMode != AudioManager.MODE_IN_COMMUNICATION) {
-                    audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
-                    AirLogger.i(TAG, "AudioManager mode transitioned from " + currentMode + " to MODE_IN_COMMUNICATION");
-                }
-                
+                // Do not override system audio mode (MODE_IN_CALL).
+                // Force speakerphone ON so audio tones couple into the physical microphone.
                 if (!audioManager.isSpeakerphoneOn()) {
                     audioManager.setSpeakerphoneOn(true);
                     AirLogger.i(TAG, "Speakerphone set to TRUE for acoustic coupling");
