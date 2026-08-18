@@ -197,6 +197,9 @@ public class AudioReceiver {
         boolean isAccumulatingImage = false;
         ByteArrayOutputStream frameBuffer = new ByteArrayOutputStream();
 
+        // Rolling sliding window for cellular carrier preamble discovery
+        StringBuilder slidingWindow = new StringBuilder();
+
         while (isListening.get()) {
             if (audioRecord == null || audioRecord.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
                 break;
@@ -204,11 +207,11 @@ public class AudioReceiver {
 
             int read = audioRecord.read(bitBuffer, 0, bitBuffer.length);
             if (read > 0) {
-                // Diagnostic check to verify if operating system is serving empty buffers during active phone call
+                // Diagnostic check to verify non-zero PCM energy
                 double currentRms = calculateRmsEnergy(bitBuffer, read);
                 if (currentRms == 0.0) {
                     consecutiveZeroEnergyCount++;
-                    if (consecutiveZeroEnergyCount % 100 == 1) { // Throttle logs to prevent output flooding
+                    if (consecutiveZeroEnergyCount % 100 == 1) {
                         AirLogger.w(TAG, "DIAGNOSTIC WARNING: Zero-energy PCM buffer detected (" 
                                 + consecutiveZeroEnergyCount + " consecutive frames). Operating system call privacy filters may be silenecing the microphone input.");
                     }
@@ -221,7 +224,7 @@ public class AudioReceiver {
                 if (bitVal == -1) {
                     consecutiveSilenceCount++;
 
-                    // If we accumulated an image stream and tone silence is reached (end of transmission), deliver full stream
+                    // If we accumulated an image stream and transmission ended, deliver full stream
                     if (isAccumulatingImage && frameBuffer.size() > 50 && consecutiveSilenceCount > 30) {
                         byte[] fullStreamBytes = frameBuffer.toByteArray();
                         AirLogger.i(TAG, "End of audio transmission detected via silence interval. Delivering full Phonetic Image (" + fullStreamBytes.length + " bytes).");
@@ -232,6 +235,7 @@ public class AudioReceiver {
                         isAccumulatingImage = false;
                         consecutiveSilenceCount = 0;
                         frameBuffer.reset();
+                        slidingWindow.setLength(0);
                     }
                     continue;
                 }
@@ -249,7 +253,50 @@ public class AudioReceiver {
                         listener.onByteDecoded(completedByte);
                     }
 
-                    // Process Frame Preamble & Delimiter (0xAA ... 0x7E)
+                    char c = (char) (completedByte & 0xFF);
+                    if (slidingWindow.length() > 64) {
+                        slidingWindow.deleteCharAt(0);
+                    }
+                    slidingWindow.append(c);
+                    String currentWindowStr = slidingWindow.toString();
+
+                    // 1. Check for remote RECEIVER_READY ACK (Sender side)
+                    if (!isAccumulatingImage && currentWindowStr.contains(CMD_RECEIVER_READY)) {
+                        AirLogger.i(TAG, "Acoustic AIR_ACK:RECEIVER_READY detected! Remote receiver answered and listening.");
+                        if (listener != null) {
+                            listener.onReceiverReadyAckReceived();
+                        }
+                        slidingWindow.setLength(0);
+                        isLockedOnPreamble = false;
+                        frameBuffer.reset();
+                        continue;
+                    }
+
+                    // 2. Check for remote ACTIVATE_RECEIVER acoustic handshake command (Receiver side)
+                    if (!isAccumulatingImage && currentWindowStr.contains(CMD_ACTIVATE_RECEIVER)) {
+                        AirLogger.i(TAG, "Remote ACTIVATE_RECEIVER command detected over voice call!");
+                        if (listener != null) {
+                            listener.onReceiverActivationCommand();
+                        }
+                        slidingWindow.setLength(0);
+                        isLockedOnPreamble = false;
+                        frameBuffer.reset();
+                        continue;
+                    }
+
+                    // 3. Sliding Direct Lock for Phonetic Image Stream
+                    if (!isAccumulatingImage && currentWindowStr.contains(PhoneticImageTransceiver.PHONETIC_IMG_PREAMBLE)) {
+                        AirLogger.i(TAG, "Phonetic Image preamble detected via sliding window! Locking stream.");
+                        isLockedOnPreamble = true;
+                        isAccumulatingImage = true;
+                        frameBuffer.reset();
+                        byte[] preambleBytes = PhoneticImageTransceiver.PHONETIC_IMG_PREAMBLE.getBytes(StandardCharsets.UTF_8);
+                        frameBuffer.write(preambleBytes, 0, preambleBytes.length);
+                        slidingWindow.setLength(0);
+                        continue;
+                    }
+
+                    // 4. Standard 0x7E delimiter lock fallback
                     if (!isLockedOnPreamble) {
                         if (completedByte == START_FRAME_DELIMITER) {
                             isLockedOnPreamble = true;
@@ -260,35 +307,10 @@ public class AudioReceiver {
                         frameBuffer.write(completedByte);
 
                         byte[] currentBufferBytes = frameBuffer.toByteArray();
-                        String preview = new String(currentBufferBytes, StandardCharsets.UTF_8);
 
-                        // 1. Check for remote RECEIVER_READY ACK (Sender side)
-                        if (!isAccumulatingImage && preview.contains(CMD_RECEIVER_READY)) {
-                            AirLogger.i(TAG, "Acoustic AIR_ACK:RECEIVER_READY detected! Remote receiver answered and listening.");
-                            if (listener != null) {
-                                listener.onReceiverReadyAckReceived();
-                            }
-                            isLockedOnPreamble = false;
-                            frameBuffer.reset();
-                            continue;
-                        }
-
-                        // 2. Check for remote ACTIVATE_RECEIVER acoustic handshake command (Receiver side)
-                        if (!isAccumulatingImage && preview.contains(CMD_ACTIVATE_RECEIVER)) {
-                            AirLogger.i(TAG, "Remote ACTIVATE_RECEIVER command detected over voice call!");
-                            if (listener != null) {
-                                listener.onReceiverActivationCommand();
-                            }
-                            isLockedOnPreamble = false;
-                            frameBuffer.reset();
-                            continue;
-                        }
-
-                        // 3. Mode 4 Check: If 16 bytes accumulated, attempt TemplateToken validation
+                        // Mode 4 Check: If 16 bytes accumulated, attempt TemplateToken validation
                         if (!isAccumulatingImage && frameBuffer.size() == TemplateToken.TOKEN_BYTE_SIZE) {
-                            byte[] candidateBytes = frameBuffer.toByteArray();
-                            TemplateToken token = TemplateToken.fromByteArray(candidateBytes);
-
+                            TemplateToken token = TemplateToken.fromByteArray(currentBufferBytes);
                             if (token != null && token.isValid()) {
                                 AirLogger.i(TAG, "Mode 4 Token detected automatically! ID=" + token.getTemplateId());
                                 if (listener != null) {
@@ -300,11 +322,9 @@ public class AudioReceiver {
                             }
                         }
 
-                        // 4. Phonetic Image Preamble Check & Full Stream Accumulator (Up to 32 KB)
-                        if (preview.contains(PhoneticImageTransceiver.PHONETIC_IMG_PREAMBLE) || isAccumulatingImage) {
-                            isAccumulatingImage = true;
-
-                            // Check if stream reached the trailing closure delimiters
+                        // Accumulate Phonetic Base64 Image
+                        if (isAccumulatingImage) {
+                            String preview = new String(currentBufferBytes, StandardCharsets.UTF_8);
                             int firstHash = preview.indexOf('#');
                             int lastHash = preview.lastIndexOf('#');
                             if (firstHash != -1 && lastHash > firstHash && (preview.endsWith("#") || countOccurrences(preview, '#') >= 2)) {
@@ -315,11 +335,12 @@ public class AudioReceiver {
                                 isLockedOnPreamble = false;
                                 isAccumulatingImage = false;
                                 frameBuffer.reset();
+                                slidingWindow.setLength(0);
                                 continue;
                             }
                         }
 
-                        // 5. Mode 2/3 Raw Binary Packet Frame flush (Strict validation: must start with 0x53 'S' and be exactly 263 bytes)
+                        // Mode 2/3 Raw Binary Packet Frame flush (Strict validation: must start with 0x53 'S' and be exactly 263 bytes)
                         if (!isAccumulatingImage && frameBuffer.size() == 263 && currentBufferBytes[0] == 0x53) {
                             if (listener != null) {
                                 listener.onFrameDecoded(currentBufferBytes);
@@ -327,7 +348,6 @@ public class AudioReceiver {
                             isLockedOnPreamble = false;
                             frameBuffer.reset();
                         } else if (!isAccumulatingImage && frameBuffer.size() >= MAX_STREAM_BUFFER_SIZE) {
-                            // Safety limit flush
                             if (listener != null) {
                                 listener.onFrameDecoded(currentBufferBytes);
                             }
