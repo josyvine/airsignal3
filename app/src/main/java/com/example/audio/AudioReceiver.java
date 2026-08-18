@@ -97,12 +97,12 @@ public class AudioReceiver {
     public void startListening() {
         if (isListening.get()) return;
 
-        // Hardware Compatibility Probe Matrix (Prioritizing raw MIC to bypass call noise-suppression DSP)
+        // Hardware Compatibility Probe Matrix (Prioritizing communication sources to bypass call silencing/noise filters)
         int[] sampleRates = new int[]{44100, 48000, 16000, 8000};
         int[] audioSources = new int[]{
-                MediaRecorder.AudioSource.MIC,
-                MediaRecorder.AudioSource.VOICE_RECOGNITION,
                 MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                MediaRecorder.AudioSource.MIC,
                 MediaRecorder.AudioSource.DEFAULT
         };
 
@@ -173,6 +173,14 @@ public class AudioReceiver {
         }
     }
 
+    private double calculateRmsEnergy(short[] buffer, int readSize) {
+        double sum = 0;
+        for (int i = 0; i < readSize; i++) {
+            sum += buffer[i] * buffer[i];
+        }
+        return Math.sqrt(sum / readSize);
+    }
+
     private void listenLoop() {
         double samplesPerBit = (double) activeSampleRate / (double) baudRate;
         int bitSampleLen = Math.max((int) Math.round(samplesPerBit), 1);
@@ -181,6 +189,7 @@ public class AudioReceiver {
         int currentByteAccumulator = 0;
         int bitCount = 0;
         int consecutiveSilenceCount = 0;
+        int consecutiveZeroEnergyCount = 0;
 
         // Frame Detection State Machine
         boolean isLockedOnPreamble = false;
@@ -194,6 +203,18 @@ public class AudioReceiver {
 
             int read = audioRecord.read(bitBuffer, 0, bitBuffer.length);
             if (read > 0) {
+                // Diagnostic check to verify if operating system is serving empty buffers during active phone call
+                double currentRms = calculateRmsEnergy(bitBuffer, read);
+                if (currentRms == 0.0) {
+                    consecutiveZeroEnergyCount++;
+                    if (consecutiveZeroEnergyCount % 100 == 1) { // Throttle logs to prevent output flooding
+                        AirLogger.w(TAG, "DIAGNOSTIC WARNING: Zero-energy PCM buffer detected (" 
+                                + consecutiveZeroEnergyCount + " consecutive frames). Operating system call privacy filters may be silenecing the microphone input.");
+                    }
+                } else {
+                    consecutiveZeroEnergyCount = 0;
+                }
+
                 int bitVal = AudioDecoder.detectBit(bitBuffer, 0, read, activeSampleRate);
 
                 if (bitVal == -1) {
