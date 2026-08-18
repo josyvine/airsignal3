@@ -83,6 +83,16 @@ public class AirSignalInCallService extends InCallService {
         }
     }
 
+    @Override
+    public void onCallAudioStateChanged(CallAudioState audioState) {
+        super.onCallAudioStateChanged(audioState);
+        if (audioState != null) {
+            AirLogger.i(TAG, "CallAudioState updated: Route=" + audioRouteToString(audioState.getRoute())
+                    + ", SupportedRoutes=" + audioState.getSupportedRouteMask()
+                    + ", isMuted=" + audioState.isMuted());
+        }
+    }
+
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
@@ -123,7 +133,11 @@ public class AirSignalInCallService extends InCallService {
                     Intent modemIntent = new Intent(AirSignalInCallService.this, AudioTransferService.class);
                     modemIntent.setAction(AudioTransferService.ACTION_CALL_ACTIVE);
                     try {
-                        startService(modemIntent);
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(modemIntent);
+                        } else {
+                            startService(modemIntent);
+                        }
                     } catch (Exception e) {
                         AirLogger.e(TAG, "Failed to auto-start AudioTransferService with ACTION_CALL_ACTIVE", e);
                     }
@@ -151,7 +165,11 @@ public class AirSignalInCallService extends InCallService {
             Intent modemIntent = new Intent(AirSignalInCallService.this, AudioTransferService.class);
             modemIntent.setAction(AudioTransferService.ACTION_CALL_ACTIVE);
             try {
-                startService(modemIntent);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(modemIntent);
+                } else {
+                    startService(modemIntent);
+                }
             } catch (Exception e) {
                 AirLogger.e(TAG, "Failed to send ACTION_CALL_ACTIVE onCallAdded", e);
             }
@@ -252,6 +270,16 @@ public class AirSignalInCallService extends InCallService {
             case Call.STATE_DISCONNECTED: return "STATE_DISCONNECTED";
             case Call.STATE_DISCONNECTING: return "STATE_DISCONNECTING";
             default: return "STATE_UNKNOWN (" + state + ")";
+        }
+    }
+
+    private String audioRouteToString(int route) {
+        switch (route) {
+            case CallAudioState.ROUTE_EARPIECE: return "ROUTE_EARPIECE";
+            case CallAudioState.ROUTE_SPEAKER: return "ROUTE_SPEAKER";
+            case CallAudioState.ROUTE_BLUETOOTH: return "ROUTE_BLUETOOTH";
+            case CallAudioState.ROUTE_WIRED_HEADSET: return "ROUTE_WIRED_HEADSET";
+            default: return "ROUTE_UNKNOWN (" + route + ")";
         }
     }
 }
