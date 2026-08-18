@@ -574,10 +574,16 @@ public class AudioTransferService extends Service implements AudioReceiver.Audio
 
             AirLogger.i(TAG, "Accumulating Phonetic Image stream. Buffer size: " + currentFullStream.length + " bytes.");
 
+            // Update Receiver UI live progress
+            Intent liveProgressIntent = new Intent(FileAssembler.ACTION_TRANSFER_PROGRESS);
+            liveProgressIntent.putExtra(FileAssembler.EXTRA_STATUS, "RECEIVING");
+            sendBroadcast(liveProgressIntent);
+            updateNotification("Receiving Image Data (" + currentFullStream.length + " bytes)...", 50);
+
             // Check if full stream reached completion closure '#' delimiters
             int firstHash = fullStreamStr.indexOf('#');
             int lastHash = fullStreamStr.lastIndexOf('#');
-            if (firstHash != -1 && lastHash > firstHash && (fullStreamStr.endsWith("#") || countOccurrences(fullStreamStr, '#') >= 3 || currentFullStream.length > 7000)) {
+            if (firstHash != -1 && lastHash > firstHash && (fullStreamStr.endsWith("#") || countOccurrences(fullStreamStr, '#') >= 2 || currentFullStream.length > 7000)) {
                 AirLogger.i(TAG, "Complete Phonetic Base64 Image received (" + currentFullStream.length + " bytes)! Reconstructing image.");
                 List<String> tokens = PhoneticImageTransceiver.parseTransmissionToTokens(currentFullStream);
                 PhoneticImageTransceiver.receiveAndReconstructImage(getApplicationContext(), tokens, "received_phonetic_photo.webp");
