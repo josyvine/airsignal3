@@ -204,10 +204,16 @@ public class AudioTransferService extends Service implements AudioReceiver.Audio
         AudioManager audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         if (audioManager != null) {
             try {
-                if (audioManager.getMode() != AudioManager.MODE_IN_CALL && audioManager.getMode() != AudioManager.MODE_IN_COMMUNICATION) {
+                int currentMode = audioManager.getMode();
+                if (currentMode != AudioManager.MODE_IN_COMMUNICATION) {
                     audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
+                    AirLogger.i(TAG, "AudioManager mode transitioned from " + currentMode + " to MODE_IN_COMMUNICATION");
                 }
-                audioManager.setSpeakerphoneOn(true);
+                
+                if (!audioManager.isSpeakerphoneOn()) {
+                    audioManager.setSpeakerphoneOn(true);
+                    AirLogger.i(TAG, "Speakerphone set to TRUE for acoustic coupling");
+                }
 
                 // Maximize volume streams so acoustic tones travel directly into call microphone
                 int maxCallVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL);
@@ -215,8 +221,13 @@ public class AudioTransferService extends Service implements AudioReceiver.Audio
 
                 int maxMusicVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
                 audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxMusicVol, 0);
+
+                AirLogger.i(TAG, "Audio routing state: Mode=" + audioManager.getMode() +
+                        ", Speaker=" + audioManager.isSpeakerphoneOn() +
+                        ", VoiceCallVol=" + audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL) + "/" + maxCallVol +
+                        ", MusicVol=" + audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) + "/" + maxMusicVol);
             } catch (Exception e) {
-                AirLogger.e(TAG, "Error configuring AudioManager", e);
+                AirLogger.e(TAG, "Error configuring AudioManager routing parameters", e);
             }
         }
 
