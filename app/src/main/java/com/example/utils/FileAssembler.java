@@ -30,7 +30,8 @@ public class FileAssembler {
     public static final String EXTRA_STATUS = "status";
 
     /**
-     * Returns the standardized public folder for all completed AirSignal transfers.
+     * Returns the standardized folder for all completed AirSignal transfers.
+     * Implements explicit diagnostic tracking and fallback for Scoped Storage compatibility.
      */
     public static File getReceivedFilesDir(Context context) {
         File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
@@ -38,13 +39,16 @@ public class FileAssembler {
 
         if (!transfersDir.exists()) {
             boolean created = transfersDir.mkdirs();
+            AirLogger.i(TAG, "Attempted to create public storage directory: " + transfersDir.getAbsolutePath() + ", success=" + created);
             if (!created) {
-                // Fallback to internal app files directory if external permission/creation is restricted
+                // Fallback to app-specific external files directory if public storage is restricted by Scoped Storage
                 if (context != null) {
-                    transfersDir = new File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "AirSignal_Transfers");
-                    if (!transfersDir.exists()) {
-                        transfersDir.mkdirs();
+                    File fallbackDir = new File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "AirSignal_Transfers");
+                    if (!fallbackDir.exists()) {
+                        boolean fallbackCreated = fallbackDir.mkdirs();
+                        AirLogger.i(TAG, "Created fallback app-specific directory: " + fallbackDir.getAbsolutePath() + ", success=" + fallbackCreated);
                     }
+                    return fallbackDir;
                 }
             }
         }
@@ -74,6 +78,9 @@ public class FileAssembler {
             AirLogger.w(TAG, "Failed to parse incoming acoustic binary frame (" + rawFrame.length + " bytes).");
             return;
         }
+
+        AirLogger.i(TAG, "Acoustic packet header decoded: ID=" + packet.getFileId() 
+                + ", Index=" + packet.getPacketIndex() + "/" + packet.getTotalPackets());
 
         TransferDatabase db = TransferDatabase.getInstance(context);
 
@@ -112,7 +119,7 @@ public class FileAssembler {
 
             if (assembledFile != null && assembledFile.exists()) {
                 db.updateTransferStatus(packet.getFileId(), "COMPLETED");
-                AirLogger.i(TAG, "File successfully assembled: " + assembledFile.getAbsolutePath());
+                AirLogger.i(TAG, "File successfully assembled: " + assembledFile.getAbsolutePath() + " (" + assembledFile.length() + " bytes)");
 
                 // Index with Android MediaScanner so file appears instantly in downloads/gallery
                 MediaScannerConnection.scanFile(
@@ -170,11 +177,12 @@ public class FileAssembler {
 
             // 6. Write final file to storage
             File outFile = new File(outputDir, filename);
-            FileOutputStream fos = new FileOutputStream(outFile);
-            fos.write(decompressedBytes);
-            fos.flush();
-            fos.close();
+            try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                fos.write(decompressedBytes);
+                fos.flush();
+            }
 
+            AirLogger.i(TAG, "assembleFile written successfully to destination: " + outFile.getAbsolutePath());
             return outFile;
         } catch (Exception e) {
             AirLogger.e(TAG, "Error assembling file", e);
