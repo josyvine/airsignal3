@@ -53,6 +53,10 @@ public class AudioTransferService extends Service implements AudioReceiver.Audio
     public static final String ACTION_RECEIVER_MODE_ACTIVE = "com.example.ACTION_RECEIVER_MODE_ACTIVE";
     public static final String ACTION_STOP_SERVICE = "com.example.ACTION_STOP_SERVICE";
 
+    // New Local Air-Gap Acoustic Actions (No Voice Call Required)
+    public static final String ACTION_START_LOCAL_RECEIVER = "com.example.ACTION_START_LOCAL_RECEIVER";
+    public static final String ACTION_SEND_LOCAL_PHONETIC = "com.example.ACTION_SEND_LOCAL_PHONETIC";
+
     public static final String EXTRA_TOKEN_PAYLOAD = "extra_token_payload";
     public static final String EXTRA_IMAGE_PATH = "extra_image_path";
     public static final String EXTRA_BINARY_FILE_PATH = "extra_binary_file_path";
@@ -101,7 +105,7 @@ public class AudioTransferService extends Service implements AudioReceiver.Audio
             wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AirSignal::AudioTransferWakeLock");
         }
 
-        // Standard Bell 202 FSK standard (1200 Baud) for cellular AMR voice stability
+        // Standard Bell 202 FSK standard (1200 Baud) for acoustic stability
         audioEncoder = new AudioEncoder(1200);
         audioReceiver = new AudioReceiver(this);
         audioReceiver.setBaudRate(1200);
@@ -109,7 +113,7 @@ public class AudioTransferService extends Service implements AudioReceiver.Audio
         notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         notificationBuilder = new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("AirSignal Audio Data Mode Active")
-                .setContentText("Awaiting call connection...")
+                .setContentText("Awaiting transmission...")
                 .setSmallIcon(android.R.drawable.ic_btn_speak_now)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setOngoing(true);
@@ -135,6 +139,24 @@ public class AudioTransferService extends Service implements AudioReceiver.Audio
             imageStreamBuffer.reset();
             stopSelf();
             return START_NOT_STICKY;
+        }
+
+        // 1. Standalone Local Receiver Mode (No Phone Call Required)
+        if (ACTION_START_LOCAL_RECEIVER.equals(action)) {
+            AirLogger.i(TAG, "Starting Standalone Local Receiver Mode");
+            ensureAudioRoutingAndListening();
+            updateNotification("Local Receiver Active: Listening for nearby sound...", 0);
+            return START_STICKY;
+        }
+
+        // 2. Standalone Local Phonetic Transmission (5s delay -> Wake-up -> 5s countdown -> Data)
+        if (ACTION_SEND_LOCAL_PHONETIC.equals(action)) {
+            String imagePath = intent.getStringExtra(EXTRA_IMAGE_PATH);
+            String fileName = intent.getStringExtra(EXTRA_FILE_NAME);
+            long fileSize = intent.getLongExtra(EXTRA_FILE_SIZE, 0);
+
+            executeLocalPhoneticTransmission(imagePath, fileName, fileSize);
+            return START_STICKY;
         }
 
         // Call transitioned to ACTIVE: Engage receiver listening and prepare audio routing
@@ -200,27 +222,84 @@ public class AudioTransferService extends Service implements AudioReceiver.Audio
         return START_STICKY;
     }
 
+    /**
+     * Executes the local standalone transmission sequence without a phone call:
+     * 5s silence -> Wake-up tone -> 5s sync countdown -> Full acoustic FSK stream.
+     */
+    private void executeLocalPhoneticTransmission(final String imagePath, final String fileName, final long fileSize) {
+        new Thread(() -> {
+            AirLogger.i(TAG, "Starting Local Acoustic Transmission sequence...");
+
+            // 1. Initial 5-second silent delay
+            for (int sec = 5; sec > 0; sec--) {
+                final int s = sec;
+                mainHandler.post(() -> updateNotification("Position phones nearby. Starting in " + s + "s...", (5 - s) * 20));
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException ignored) {}
+            }
+
+            // 2. Play wake-up activation acoustic signal
+            mainHandler.post(() -> {
+                ensureAudioRoutingAndListening();
+                updateNotification("Transmitting Wake-Up signal to receiver...", 0);
+
+                audioEncoder.transmitActivationCommand(new AudioEncoder.OnTransmissionProgressListener() {
+                    @Override
+                    public void onProgress(int currentPacket, int totalPackets, int percent) {}
+
+                    @Override
+                    public void onComplete() {
+                        AirLogger.i(TAG, "Local Wake-Up signal transmitted. Starting 5-second sync countdown...");
+                        startLocalFiveSecondSyncAndTransmit(imagePath, fileName, fileSize);
+                    }
+
+                    @Override
+                    public void onError(Exception e) {
+                        AirLogger.e(TAG, "Error transmitting local wake-up signal, proceeding with fallback countdown", e);
+                        startLocalFiveSecondSyncAndTransmit(imagePath, fileName, fileSize);
+                    }
+                });
+            });
+        }).start();
+    }
+
+    private void startLocalFiveSecondSyncAndTransmit(final String imagePath, final String fileName, final long fileSize) {
+        new Thread(() -> {
+            // 3. Second 5-second synchronization countdown
+            for (int sec = 5; sec > 0; sec--) {
+                final int s = sec;
+                mainHandler.post(() -> updateNotification("Receiver awakened. Synchronizing channel (" + s + "s)...", (5 - s) * 20));
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException ignored) {}
+            }
+
+            // 4. Transmit full phonetic image audio stream
+            mainHandler.post(() -> {
+                ensureAudioRoutingAndListening();
+                transmitPhoneticImageInternal(imagePath, fileName, fileSize);
+            });
+        }).start();
+    }
+
     private void ensureAudioRoutingAndListening() {
         AudioManager audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         if (audioManager != null) {
             try {
-                // Do not override system audio mode (MODE_IN_CALL).
-                // Force speakerphone ON so audio tones couple into the physical microphone.
                 if (!audioManager.isSpeakerphoneOn()) {
                     audioManager.setSpeakerphoneOn(true);
                     AirLogger.i(TAG, "Speakerphone set to TRUE for acoustic coupling");
                 }
 
-                // Maximize volume streams so acoustic tones travel directly into call microphone
                 int maxCallVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL);
                 audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, maxCallVol, 0);
 
                 int maxMusicVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
                 audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxMusicVol, 0);
 
-                AirLogger.i(TAG, "Audio routing state: Mode=" + audioManager.getMode() +
+                AirLogger.i(TAG, "Audio routing configured: Mode=" + audioManager.getMode() +
                         ", Speaker=" + audioManager.isSpeakerphoneOn() +
-                        ", VoiceCallVol=" + audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL) + "/" + maxCallVol +
                         ", MusicVol=" + audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) + "/" + maxMusicVol);
             } catch (Exception e) {
                 AirLogger.e(TAG, "Error configuring AudioManager routing parameters", e);
@@ -230,7 +309,7 @@ public class AudioTransferService extends Service implements AudioReceiver.Audio
         if (!isListening && ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             audioReceiver.startListening();
             isListening = true;
-            updateNotification("Active call connected. Listening for data...", 0);
+            updateNotification("Active. Listening for audio data...", 0);
         }
     }
 
@@ -240,19 +319,16 @@ public class AudioTransferService extends Service implements AudioReceiver.Audio
         }
 
         final StagedPayload payload = stagedPayload;
-        stagedPayload = null; // Clear queue so it is only transmitted once
+        stagedPayload = null;
 
-        // Small 800ms stabilization delay
         mainHandler.postDelayed(() -> {
             ensureAudioRoutingAndListening();
             updateNotification("Sending activation command to receiver...", 0);
 
-            // Broadcast active transfer status to InCallActivity
             Intent startBroadcast = new Intent(FileAssembler.ACTION_TRANSFER_PROGRESS);
             startBroadcast.putExtra(FileAssembler.EXTRA_STATUS, "TRANSFERRING");
             sendBroadcast(startBroadcast);
 
-            // Transmit the ACTIVATE_RECEIVER handshake tone
             audioEncoder.transmitActivationCommand(new AudioEncoder.OnTransmissionProgressListener() {
                 @Override
                 public void onProgress(int currentPacket, int totalPackets, int percent) {}
@@ -312,7 +388,7 @@ public class AudioTransferService extends Service implements AudioReceiver.Audio
             return;
         }
 
-        updateNotification("Transmitting Semantic Token over call...", 10);
+        updateNotification("Transmitting Semantic Token...", 10);
         audioEncoder.transmitPhoneticToken(token, new AudioEncoder.OnTransmissionProgressListener() {
             @Override
             public void onProgress(int currentPacket, int totalPackets, int percent) {
@@ -554,7 +630,7 @@ public class AudioTransferService extends Service implements AudioReceiver.Audio
     @Override
     public void onReceiverActivationCommand() {
         AirLogger.i(TAG, "Remote ACTIVATE_RECEIVER signal received! Engaging Receiver Mode.");
-        updateNotification("Receiver Mode Active: Incoming In-Call Data Transfer...", 10);
+        updateNotification("Receiver Mode Active: Incoming Audio Transfer...", 10);
 
         Intent broadcast = new Intent(ACTION_RECEIVER_MODE_ACTIVE);
         sendBroadcast(broadcast);
@@ -625,7 +701,7 @@ public class AudioTransferService extends Service implements AudioReceiver.Audio
         VisualRenderer.showVisualResultDialog(getApplicationContext(), token);
 
         updateNotification("Received Emergency Visual Token!", 100);
-        mainHandler.postDelayed(() -> updateNotification("Listening and modulating data over voice call stream", 0), 3000);
+        mainHandler.postDelayed(() -> updateNotification("Listening for audio data stream...", 0), 3000);
     }
 
     @Override
@@ -640,7 +716,7 @@ public class AudioTransferService extends Service implements AudioReceiver.Audio
                     "AirSignal Audio Data Channel",
                     NotificationManager.IMPORTANCE_HIGH
             );
-            channel.setDescription("Maintains CPU wake locks and streams FSK modem data during voice calls.");
+            channel.setDescription("Maintains CPU wake locks and streams FSK modem data.");
             NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
             if (manager != null) {
                 manager.createNotificationChannel(channel);
