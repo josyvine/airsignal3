@@ -197,7 +197,7 @@ public class AudioReceiver {
         boolean isAccumulatingImage = false;
         ByteArrayOutputStream frameBuffer = new ByteArrayOutputStream();
 
-        // Rolling sliding window for cellular carrier preamble discovery
+        // Rolling sliding window for cellular carrier and local air-gap discovery
         StringBuilder slidingWindow = new StringBuilder();
 
         while (isListening.get()) {
@@ -224,7 +224,7 @@ public class AudioReceiver {
                 if (bitVal == -1) {
                     consecutiveSilenceCount++;
 
-                    // If we accumulated an image stream and transmission ended, deliver full stream
+                    // If an image stream was accumulated and silence interval is reached, deliver the complete stream
                     if (isAccumulatingImage && frameBuffer.size() > 50 && consecutiveSilenceCount > 30) {
                         byte[] fullStreamBytes = frameBuffer.toByteArray();
                         AirLogger.i(TAG, "End of audio transmission detected via silence interval. Delivering full Phonetic Image (" + fullStreamBytes.length + " bytes).");
@@ -274,7 +274,7 @@ public class AudioReceiver {
 
                     // 2. Check for remote ACTIVATE_RECEIVER acoustic handshake command (Receiver side)
                     if (!isAccumulatingImage && currentWindowStr.contains(CMD_ACTIVATE_RECEIVER)) {
-                        AirLogger.i(TAG, "Remote ACTIVATE_RECEIVER command detected over voice call!");
+                        AirLogger.i(TAG, "Remote ACTIVATE_RECEIVER command detected!");
                         if (listener != null) {
                             listener.onReceiverActivationCommand();
                         }
@@ -284,7 +284,7 @@ public class AudioReceiver {
                         continue;
                     }
 
-                    // 3. Sliding Direct Lock for Phonetic Image Stream
+                    // 3. Direct Sliding Lock for Phonetic Image Stream
                     if (!isAccumulatingImage && currentWindowStr.contains(PhoneticImageTransceiver.PHONETIC_IMG_PREAMBLE)) {
                         AirLogger.i(TAG, "Phonetic Image preamble detected via sliding window! Locking stream.");
                         isLockedOnPreamble = true;
