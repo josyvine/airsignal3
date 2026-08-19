@@ -28,9 +28,56 @@ public class PhoneticImageTransceiver {
         void onError(Exception e);
     }
 
+    public static class PhoneticTransferEstimate {
+        public int tokenCount;
+        public int base64Length;
+        public int payloadBytes;
+        public int estimatedSeconds;
+        public List<String> tokens;
+
+        public PhoneticTransferEstimate(int tokenCount, int base64Length, int payloadBytes, int estimatedSeconds, List<String> tokens) {
+            this.tokenCount = tokenCount;
+            this.base64Length = base64Length;
+            this.payloadBytes = payloadBytes;
+            this.estimatedSeconds = estimatedSeconds;
+            this.tokens = tokens;
+        }
+    }
+
+    /**
+     * Pre-calculates the NATO token count, payload size, and estimated duration for UI preview dialogs.
+     */
+    public static PhoneticTransferEstimate calculateTransferMetrics(File imageFile, int baudRate) {
+        if (imageFile == null || !imageFile.exists()) return null;
+        try (FileInputStream fis = new FileInputStream(imageFile)) {
+            byte[] fileBytes = new byte[(int) imageFile.length()];
+            int read = fis.read(fileBytes);
+            if (read != fileBytes.length) return null;
+
+            String rawBase64 = Base64.encodeToString(fileBytes, Base64.NO_WRAP);
+            List<String> phoneticTokens = PhoneticBase64Dictionary.encodeBase64ToPhoneticTokens(rawBase64);
+            byte[] payload = formatTokensForTransmission(phoneticTokens);
+
+            int baud = (baudRate > 0) ? baudRate : 1200;
+            int audioSeconds = (int) Math.ceil((payload.length * 8.0) / (double) baud);
+            int totalEstimatedSeconds = 5 + 1 + 5 + audioSeconds;
+
+            return new PhoneticTransferEstimate(
+                    phoneticTokens.size(),
+                    rawBase64.length(),
+                    payload.length,
+                    totalEstimatedSeconds,
+                    phoneticTokens
+            );
+        } catch (Exception e) {
+            AirLogger.e(TAG, "Error calculating phonetic transfer metrics", e);
+            return null;
+        }
+    }
+
     /**
      * SENDER: Converts an image file to Base64, applies Phonetic Dictionary block substitution,
-     * and transmits the compressed phonetic token stream over the active voice call.
+     * and transmits the compressed phonetic token stream over audio.
      */
     public static void sendImageViaPhoneticDictionary(
             final Context context,
@@ -72,15 +119,15 @@ public class PhoneticImageTransceiver {
                 // 3. Substitute blocks with pre-built dictionary words (ALPHA, BRAVO, CHARLIE...)
                 List<String> phoneticTokens = PhoneticBase64Dictionary.encodeBase64ToPhoneticTokens(rawBase64);
 
-                // 4. Format into transmission payload with sync preamble
+                // 4. Format into transmission payload with sync preamble and closure
                 byte[] transmissionPayload = formatTokensForTransmission(phoneticTokens);
 
-                if (listener != null) listener.onProgress(4, 4, "Modulating FSK tones over voice call...");
+                if (listener != null) listener.onProgress(4, 4, "Modulating audio stream...");
 
                 AirLogger.i(TAG, "Transmitting image. Original Base64 chars: " + originalLength +
                         ", Dictionary tokens: " + phoneticTokens.size() + ", Payload size: " + transmissionPayload.length + " bytes.");
 
-                // 5. Transmit audio tones over the call stream
+                // 5. Transmit audio tones
                 encoder.transmitDataOverAudio(transmissionPayload, new AudioEncoder.OnTransmissionProgressListener() {
                     @Override
                     public void onProgress(int currentPacket, int totalPackets, int percent) {
@@ -174,7 +221,7 @@ public class PhoneticImageTransceiver {
     }
 
     /**
-     * Serializes a list of phonetic tokens into a delimited payload with preamble.
+     * Serializes a list of phonetic tokens into a delimited payload with preamble and trailing closure '#'.
      */
     public static byte[] formatTokensForTransmission(List<String> tokens) {
         StringBuilder sb = new StringBuilder();
@@ -185,6 +232,7 @@ public class PhoneticImageTransceiver {
                 sb.append("|");
             }
         }
+        sb.append("#"); // Trailing closure delimiter to announce stream completion
         return sb.toString().getBytes(StandardCharsets.UTF_8);
     }
 
